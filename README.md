@@ -1,6 +1,5 @@
 # ⚡ ZUsage
 
-[![CI](https://github.com/wsj414855138-code/zusage/actions/workflows/ci.yml/badge.svg)](https://github.com/wsj414855138-code/zusage/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-macOS-black)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
