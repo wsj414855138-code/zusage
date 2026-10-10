@@ -101,7 +101,7 @@ def main():
         names = "、".join(sorted(NAMES.get(x, x) for x in quota_agents))
         print(f"* {names} 是会话级配额口径（unit=quota）：数字是配额消耗而非模型输出 token，也没有速度。")
 
-    print("\n生成速度（近 24h · ZCode/Codex/Pi 提供逐请求耗时，WorkBuddy 无）")
+    print("\n生成速度（近 24h · 有逐请求耗时的来源）")
     print(f"{'Agent · 模型':<44} {'tok/s':>7} {'请求':>6}")
     for (ag, m), (o, sec, n) in sorted(speed.items(), key=lambda kv: -kv[1][0]):
         if o <= 0 or sec <= 0:

@@ -1,8 +1,9 @@
 # 本机扫描器内部状态
 .mimosa/
 
-# 本机验证材料（含个人截图），不入公开仓库
-docs/
+# 本机验证材料（含个人截图），不入公开仓库；仅放行面板效果图
+docs/*
+!docs/screenshot.png
 
 # macOS
 .DS_Store
