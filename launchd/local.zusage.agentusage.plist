@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- 模板：install.sh 会按实际路径重新生成同结构文件（实际 label 为 local.zusage.agentusage）。
+     注意 ProgramArguments 必须指向运行时副本（~/.zcode/cli/agent-usage/sync.py），
+     不能指向项目里的源文件 —— macOS TCC 保护 ~/Desktop，launchd 起的进程读不到。 -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>local.zusage.agentusage</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>$HOME/.zcode/cli/agent-usage/sync.py</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>60</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardErrorPath</key>
+    <string>$HOME/.zcode/cli/agent-usage/sync.err</string>
+</dict>
+</plist>

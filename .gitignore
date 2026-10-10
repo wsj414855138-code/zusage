@@ -1,0 +1,12 @@
+# 本机扫描器内部状态
+.mimosa/
+
+# 本机验证材料（含个人截图），不入公开仓库
+docs/
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc

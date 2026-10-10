@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+"""zusage — 多 Agent token 用量与生成速度统计（ZCode / Codex / WorkBuddy / Pi）。
+
+数据源：统一库 ~/.zcode/cli/agent-usage/usage.db（launchd 每 60 秒同步）。
+同步脚本按本文件位置推导，整个项目可整体搬家。
+用法：zusage [--days N] [--today] [--sync]
+"""
+import argparse
+import sqlite3
+import subprocess
+import sys
+from collections import defaultdict
+from datetime import datetime, timedelta
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent          # <项目>/cli
+SYNC = HERE.parent / "sync" / "sync.py"         # <项目>/sync/sync.py
+DB = Path.home() / ".zcode" / "cli" / "agent-usage" / "usage.db"
+NAMES = {"zcode": "ZCode", "codex": "Codex", "workbuddy": "WorkBuddy", "pi": "Pi"}
+ORDER = ["zcode", "codex", "workbuddy", "pi"]
+
+
+def maybe_sync(force):
+    if not force and DB.exists():
+        return
+    if not SYNC.exists():
+        return
+    subprocess.run([sys.executable, str(SYNC)], capture_output=True)
+
+
+def fetch(days):
+    since = int((datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+                 - timedelta(days=days - 1)).timestamp() * 1000)
+    con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=2)
+    try:
+        rows = con.execute(
+            "SELECT agent, ts, model, output_tokens, input_tokens, cache_read_tokens, gen_ms, cost_usd, unit "
+            "FROM requests WHERE ts >= ? ORDER BY ts", (since,)).fetchall()
+    finally:
+        con.close()
+    return rows
+
+
+def compact(n):
+    n = float(n)
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.0f}k"
+    return str(int(n))
+
+
+def main():
+    ap = argparse.ArgumentParser(description="多 Agent token 用量与生成速度")
+    ap.add_argument("--days", type=int, default=7, help="统计最近 N 天（默认 7）")
+    ap.add_argument("--today", action="store_true", help="只看今天")
+    ap.add_argument("--sync", action="store_true", help="打印前先强制同步一次")
+    a = ap.parse_args()
+    days = 1 if a.today else a.days
+    maybe_sync(a.sync)
+    if not DB.exists():
+        print("统一库不存在，先跑一次同步：python3 " + str(SYNC))
+        return
+
+    rows = fetch(days)
+    start_of_today = int(datetime.now().replace(hour=0, minute=0, second=0,
+                                                microsecond=0).timestamp() * 1000)
+
+    agg = defaultdict(lambda: [0, 0])          # agent -> [记录数, 输出]
+    today = defaultdict(lambda: [0, 0])
+    cost_sum = defaultdict(float)              # agent -> 费用（仅 Pi 有）
+    quota_agents = set()                       # 配额口径的数据源（WorkBuddy）
+    speed = defaultdict(lambda: [0, 0.0, 0])   # zcode 按模型: 输出, 生成秒, 次数
+    for (agent, ts, model, o, i, cr, gen, cost, unit) in rows:
+        agg[agent][0] += 1
+        agg[agent][1] += o
+        if ts >= start_of_today:
+            today[agent][0] += 1
+            today[agent][1] += o
+        if cost:
+            cost_sum[agent] += cost
+        if unit and unit != "token":
+            quota_agents.add(agent)
+        if gen and gen > 50:
+            s = speed[(agent, model or "?")]
+            s[0] += o
+            s[1] += gen / 1000.0
+            s[2] += 1
+
+    print(f"多 Agent 用量 · 近 {days} 天\n")
+    print(f"{'Agent':<10} {'今日记录':>8} {'今日输出':>10} {'累计记录':>9} {'累计输出':>11} {'累计费用':>9}")
+    agents = [x for x in ORDER if x in agg] + [x for x in agg if x not in ORDER]
+    for ag in agents:
+        n, o = agg[ag]
+        tn, to = today[ag]
+        c = f"${cost_sum[ag]:.2f}" if cost_sum.get(ag) else "—"
+        mark = " *" if ag in quota_agents else ""
+        print(f"{NAMES.get(ag, ag) + mark:<10} {tn:>8} {compact(to):>10} {n:>9} {compact(o):>11} {c:>9}")
+
+    if quota_agents:
+        names = "、".join(sorted(NAMES.get(x, x) for x in quota_agents))
+        print(f"* {names} 是会话级配额口径（unit=quota）：数字是配额消耗而非模型输出 token，也没有速度。")
+
+    print("\n生成速度（近 24h · ZCode/Codex/Pi 提供逐请求耗时，WorkBuddy 无）")
+    print(f"{'Agent · 模型':<44} {'tok/s':>7} {'请求':>6}")
+    for (ag, m), (o, sec, n) in sorted(speed.items(), key=lambda kv: -kv[1][0]):
+        if o <= 0 or sec <= 0:
+            continue
+        print(f"{NAMES.get(ag, ag) + ' · ' + m:<44} {o / sec:>7.1f} {n:>6}")
+
+
+if __name__ == "__main__":
+    main()
