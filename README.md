@@ -3,6 +3,32 @@
 macOS 菜单栏仪表盘 + 终端命令，实时监控本机各 AI Agent 的 token 消耗与生成速度。
 纯本地：只读各 Agent 自己的本地数据库/日志，无网络请求、无第三方依赖。
 
+## 快速开始
+
+前提：macOS 12+，装好 Xcode 命令行工具（`xcode-select --install`，提供 swiftc 与 python3）。
+
+```bash
+git clone https://github.com/wsj414855138-code/zusage.git
+cd zusage
+bash install.sh
+```
+
+装完菜单栏出现 ⚡ 图标，点击弹出面板。装在哪个目录都行（脚本会把采集器部署到
+`~/.zcode/cli/agent-usage/` 作为运行时副本，见下文「部署模型」）。
+
+- 首次添加登录项时 macOS 会弹一次「自动化」授权弹窗，允许即可（拒绝也不影响使用，只是开机不自启）。
+- `zusage` 命令装在 `~/.local/bin/`，若提示找不到命令，把它加进 PATH：
+  `echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc`
+- 面板里只显示**你本机实际在用的** Agent（比如没用 Pi 就不会有 Pi 这一行）。
+- 卸载：退出菜单栏 App 后，删除 `~/Applications/ZUsage.app`、
+  `~/Library/LaunchAgents/local.zusage.agentusage.plist` 与 `~/.zcode/cli/agent-usage/` 即可，无其他残留。
+
+## 隐私
+
+采集器只**读取**本机 Agent 的日志/数据库（路径见下表），聚合结果写入本地的
+`~/.zcode/cli/agent-usage/usage.db`。全程无网络请求、无遥测、无任何数据上传；
+读 Agent 库一律只读优先，不写对方任何数据。
+
 ## 监控对象
 
 | Agent | 数据源 | 粒度 | 速度 |
@@ -51,7 +77,7 @@ macOS 菜单栏仪表盘 + 终端命令，实时监控本机各 AI Agent 的 tok
 | `sync/sync.py` | 采集器**源文件**：4 个适配器 + 统一库 schema + 增量/版本号/容错逻辑 |
 | `menubar/main.swift` | 菜单栏 App：NSStatusItem + NSPopover 仪表盘、数据聚合、标题模式 |
 | `cli/zusage` | 终端报表：多 Agent 汇总表 + 按 Agent·模型的 24h 速度 |
-| `tests/smoke_test.py` | 适配器冒烟测试（离线 fixtures，18 项断言） |
+| `tests/smoke_test.py` | 适配器冒烟测试（离线 fixtures，27 项断言，不依赖真实 Agent 数据） |
 | `install.sh` | 一键安装/更新：按实际路径生成 plist、写 App 配置、装登录项 |
 | `menubar/build.sh` | swiftc 构建 → `~/Applications/ZUsage.app` |
 | `menubar/render-icon.swift` | 开发工具：渲染图标预览 PNG |
