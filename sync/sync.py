@@ -7,6 +7,8 @@
   workbuddy ~/.workbuddy/projects/**/*.jsonl (transcripts，逐请求 usage；
              模型按 sessionId 关联 workbuddy.db sessions.model)
   pi        ~/.pi/agent/sessions/**/*.jsonl (assistant 消息带 usage + cost)
+  kimi      ~/.kimi-code/sessions/**/agents/*/wire.jsonl (step.end 事件自带真实
+             流式时长 llmStreamDurationMs，无需估算)
 
 统一口径：input_tokens 一律表示「不含缓存」的输入，缓存单独进 cache_read_tokens。
   zcode / pi 的来源本身就不含缓存；codex 与 workbuddy 的 input_tokens 含缓存
@@ -15,7 +17,8 @@
 数据目录（usage.db）固定在 ~/.zcode/cli/agent-usage/，与代码目录分离。
 所有路径可用环境变量覆盖（便于测试）：
   ZUSAGE_UDB / ZUSAGE_ZCODE_DB / ZUSAGE_CODEX_DIR /
-  ZUSAGE_WORKBUDDY_DB / ZUSAGE_WORKBUDDY_PROJECTS / ZUSAGE_PI_DIR
+  ZUSAGE_WORKBUDDY_DB / ZUSAGE_WORKBUDDY_PROJECTS /
+  ZUSAGE_KIMI_DIR / ZUSAGE_PI_DIR
 
 幂等：所有行按 (agent, key) INSERT OR REPLACE，重复跑不会重复计数；
 文件型数据源按 mtime:size 签名增量跳过（读取成功后才会记录签名）。
@@ -41,6 +44,7 @@ ZCODE_DB = _path("ZUSAGE_ZCODE_DB", Path.home() / ".zcode" / "cli" / "db" / "db.
 CODEX_SESSIONS = _path("ZUSAGE_CODEX_DIR", Path.home() / ".codex" / "sessions")
 WORKBUDDY_DB = _path("ZUSAGE_WORKBUDDY_DB", Path.home() / ".workbuddy" / "workbuddy.db")
 WORKBUDDY_PROJECTS = _path("ZUSAGE_WORKBUDDY_PROJECTS", Path.home() / ".workbuddy" / "projects")
+KIMI_SESSIONS = _path("ZUSAGE_KIMI_DIR", Path.home() / ".kimi-code" / "sessions")
 PI_SESSIONS = _path("ZUSAGE_PI_DIR", Path.home() / ".pi" / "agent" / "sessions")
 
 BACKFILL_MS = int((time.time() - 30 * 86400) * 1000)   # 首次全量回填窗口（30 天）
@@ -53,6 +57,8 @@ CODEX_LOGIC_VERSION = 3
 # v1: session_usage 会话配额口径；v2: 改用 projects transcripts 逐请求口径（含 gen_ms），
 #     并在迁移时清空旧 quota 行
 WORKBUDDY_LOGIC_VERSION = 2
+# v1: kimi wire.jsonl 的 step.end 事件（真实流式时长）
+KIMI_LOGIC_VERSION = 1
 # v2: pi 增加逐请求耗时（gen_ms）
 PI_LOGIC_VERSION = 2
 
@@ -371,6 +377,74 @@ def sync_workbuddy(con):
     set_state(con, "workbuddy", new_state)   # 顺带清理已删除会话文件的条目
 
 
+def sync_kimi(con):
+    """Kimi Code CLI 的 wire.jsonl → 逐请求行（自带真实生成时长，无需估算）。
+
+    ~/.kimi-code/sessions/wd_*/session_*/agents/*/wire.jsonl 每行一条事件；
+    type=context.append_loop_event 且 event.type=step.end 的记录对应一次 LLM
+    响应（与 usage.record 一一对应，覆盖率 ~99.7%；少数无 step.end 的为中途
+    打断，不入库）。event.usage 口径：inputOther=不含缓存的输入、output=输出、
+    inputCacheRead=缓存读；inputCacheCreation（新建缓存）在统一库无对应列，不入库。
+    event.llmStreamDurationMs 是真实流式生成时长（毫秒），直接入库 gen_ms。
+    """
+    if not KIMI_SESSIONS.exists():
+        return
+    state = get_state(con, "kimi")
+    force = state.get("v") != KIMI_LOGIC_VERSION
+    if force:
+        print("kimi 提取逻辑已更新，全量重读会话文件", file=sys.stderr)
+    new_state = {"v": KIMI_LOGIC_VERSION}
+    for f in sorted(KIMI_SESSIONS.rglob("wire.jsonl")):
+        path_key = str(f)
+        try:
+            st = f.stat()
+            sig = str(int(st.st_mtime)) + ":" + str(st.st_size)
+        except OSError:
+            continue
+        if not force and state.get(path_key) == sig:
+            new_state[path_key] = sig
+            continue
+        recs = []
+        try:
+            with open(f, encoding="utf-8", errors="ignore") as fh:
+                for ln, line in enumerate(fh, 1):
+                    if '"step.end"' not in line or '"usage"' not in line:
+                        continue
+                    try:
+                        j = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if j.get("type") != "context.append_loop_event":
+                        continue
+                    ev = j.get("event") or {}
+                    if ev.get("type") != "step.end":
+                        continue
+                    u = ev.get("usage") or {}
+                    o = u.get("output", 0) or 0
+                    i = u.get("inputOther", 0) or 0
+                    if not o and not i:
+                        continue
+                    ts = j.get("time") or ev.get("time") or 0
+                    if isinstance(ts, bool) or not isinstance(ts, (int, float)):
+                        ts = 0
+                    model = str(j.get("model") or ev.get("model") or "?")
+                    if model.startswith("kimi-code/"):
+                        model = model[len("kimi-code/"):]
+                    gen = ev.get("llmStreamDurationMs")
+                    if not isinstance(gen, (int, float)) or gen <= 0:
+                        gen = None
+                    recs.append((path_key + ":" + str(ln), int(ts), model,
+                                 i, o, u.get("inputCacheRead", 0) or 0, int(gen) if gen else None))
+        except OSError as e:
+            print("kimi 文件读取失败，下轮重试:", path_key, e, file=sys.stderr)
+            continue   # 不记签名 → 下一轮重试
+        for rec in recs:
+            write_token_row(con, "kimi", rec[0], rec[1], rec[2], "completed",
+                            rec[3], rec[4], rec[5], rec[6], None, "token")
+        new_state[path_key] = sig
+    set_state(con, "kimi", new_state)   # 顺带清理已删除会话文件的条目
+
+
 def sync_pi(con):
     """Pi CLI 会话 JSONL（assistant 消息带 usage + cost）→ 逐消息行。
 
@@ -448,7 +522,8 @@ def main():
     con = udb()
     try:
         for name, fn in (("zcode", sync_zcode), ("codex", sync_codex),
-                         ("workbuddy", sync_workbuddy), ("pi", sync_pi)):
+                         ("workbuddy", sync_workbuddy), ("pi", sync_pi),
+                         ("kimi", sync_kimi)):
             try:
                 fn(con)
                 con.commit()   # 逐个提交：单个数据源失败不影响已采集的数据

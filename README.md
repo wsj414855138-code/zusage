@@ -6,7 +6,7 @@
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 
 **macOS 菜单栏仪表盘：把多个 AI 编码 Agent 的 token 用量与生成速度，装进一个弹窗。**
-One popover for all your AI coding agents — token usage & generation speed, ZCode / Codex / WorkBuddy / Pi.
+One popover for all your AI coding agents — ZCode / Codex / WorkBuddy / Pi / Kimi Code.
 
 纯本地运行：只读各 Agent 自己的日志，**无网络请求、无遥测、零依赖**。
 
@@ -71,6 +71,9 @@ bash install.sh
 | Codex | `~/.codex/sessions/**/*.jsonl` | 逐请求 | ✅ 墙钟窗口法还原 |
 | WorkBuddy | `~/.workbuddy/projects/**/*.jsonl` | 逐请求 | ✅ 墙钟窗口法还原 |
 | Pi | `~/.pi/agent/sessions/**/*.jsonl` | 逐请求 | ✅ 墙钟窗口法还原（唯一带真实美元成本） |
+| Kimi Code | `~/.kimi-code/sessions/**/agents/*/wire.jsonl` | 逐请求 | ✅ 自带真实流式时长 `llmStreamDurationMs` |
+
+Qoder、Kimi 桌面版、DeepSeek Harness、ima 等应用经排查**无本地逐请求 token 日志**，暂无法接入；新增数据源的通用方法见[接入你自己的 Agent](#接入你自己的-agent)。
 
 ## 速度是怎么算的
 
@@ -147,7 +150,7 @@ macOS TCC 保护 `~/Desktop`：launchd 拉起的进程读桌面下的脚本会�
 ## 开发
 
 ```bash
-python3 tests/smoke_test.py   # 27 项断言，离线 fixtures，不需要装任何 Agent
+python3 tests/smoke_test.py   # 32 项断言，离线 fixtures，不需要装任何 Agent
 bash menubar/build.sh         # 改完 UI 重建 App
 bash install.sh               # 改完采集器重新部署运行时副本
 ```

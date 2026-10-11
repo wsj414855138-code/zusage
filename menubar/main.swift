@@ -49,6 +49,7 @@ func dispName(_ s: String) -> String {
     if s == "codex" { return "Codex" }
     if s == "workbuddy" { return "WorkBuddy" }
     if s == "pi" { return "Pi" }
+    if s == "kimi" { return "Kimi Code" }
     return s
 }
 

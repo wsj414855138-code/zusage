@@ -128,8 +128,34 @@ def build_fixtures(tmp):
                                "cache_read_input_tokens": 0, "total_tokens": 10}}},
     ]
     (wbp / "sess1.jsonl").write_text("\n".join(json.dumps(x) for x in wb_events))
+    # kimi: wire.jsonl 的 step.end 事件自带 usage 与真实流式时长；
+    # usage.record 与 step.end 一一对应，只取 step.end 防双计
+    ki = tmp / "kimi-projects" / "wd_demo"
+    ki.mkdir(parents=True)
+    kb = [
+        {"type": "metadata"},
+        # 正常响应：真实时长 4.2s
+        {"type": "usage.record", "time": T0, "model": "kimi-code/k3",
+         "usage": {"inputOther": 100, "output": 9, "inputCacheRead": 0, "inputCacheCreation": 0}},
+        {"type": "context.append_loop_event", "time": T0 + 1, "model": "kimi-code/k3",
+         "event": {"type": "step.end", "turnId": "0", "usage": {"inputOther": 100, "output": 9,
+                   "inputCacheRead": 200, "inputCacheCreation": 50},
+                   "llmStreamDurationMs": 4200}},
+        # 无 usage 的 step.end：不入库
+        {"type": "context.append_loop_event", "time": T0 + 2,
+         "event": {"type": "step.end", "turnId": "1"}},
+        # 时长缺失（中断）：入库存但无 gen
+        {"type": "usage.record", "time": T0 + 3, "model": "kimi-code/kimi-for-coding",
+         "usage": {"inputOther": 30, "output": 4, "inputCacheRead": 0, "inputCacheCreation": 0}},
+        {"type": "context.append_loop_event", "time": T0 + 4, "model": "kimi-code/kimi-for-coding",
+         "event": {"type": "step.end", "turnId": "2", "usage": {"inputOther": 30, "output": 4,
+                   "inputCacheRead": 0, "inputCacheCreation": 0}}},
+    ]
+    agents = ki / "session_x" / "agents" / "main"
+    agents.mkdir(parents=True)
+    (agents / "wire.jsonl").write_text("\n".join(json.dumps(x) for x in kb))
     (wbp / "broken.jsonl").mkdir()   # open() 会抛 IsADirectoryError
-    return zdb, cx, wb, pi, wbp
+    return zdb, cx, wb, pi, wbp, ki
 
 
 def load_sync(env):
@@ -149,7 +175,7 @@ def rows_of(con, agent):
 def main():
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
-        zdb, cx, wb, pi, wbp = build_fixtures(tmp)
+        zdb, cx, wb, pi, wbp, ki = build_fixtures(tmp)
         udb = tmp / "usage.db"
         # 预置一条旧版配额行，验证 v2 迁移会清掉它
         pre = sqlite3.connect(udb)
@@ -164,6 +190,7 @@ def main():
             "ZUSAGE_CODEX_DIR": cx,
             "ZUSAGE_WORKBUDDY_DB": wb,
             "ZUSAGE_WORKBUDDY_PROJECTS": wbp,
+            "ZUSAGE_KIMI_DIR": ki,
             "ZUSAGE_PI_DIR": pi,
         })
 
@@ -209,6 +236,17 @@ def main():
         check("时间戳为 null 的记录仍入库(ts=0 兜底)", "5" in wb_rows, list(wb_rows))
         legacy = con.execute("SELECT COUNT(*) FROM requests WHERE agent='workbuddy' AND unit='quota'").fetchone()[0]
         check("旧 quota 行已在 v2 迁移中清空", legacy == 0, legacy)
+
+        # kimi（step.end 事件口径，真实流式时长）
+        ki_rows = {r[0].rsplit("wire.jsonl:", 1)[1]: r for r in rows_of(con, "kimi")
+                   if "wire.jsonl:" in r[0]}
+        check("kimi 逐请求行已入库（2 条，无 usage 的 step.end 不计）", len(ki_rows) == 2, ki_rows)
+        r_k1 = ki_rows.get("3")
+        check("kimi 模型名去掉 kimi-code/ 前缀", r_k1 and r_k1[1] == "k3", r_k1)
+        check("kimi input=inputOther、cache 单独记录", r_k1 and r_k1[2] == 100 and r_k1[4] == 200, r_k1)
+        check("kimi gen=真实流式时长 4200ms", r_k1 and r_k1[7] == 4200, r_k1)
+        r_k2 = ki_rows.get("6")
+        check("kimi 时长缺失时入库但 gen 为空", r_k2 and r_k2[2] == 30 and r_k2[7] is None, r_k2)
 
         # zcode
         zc_rows = rows_of(con, "zcode")
