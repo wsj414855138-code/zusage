@@ -56,7 +56,14 @@ def main():
     ap.add_argument("--days", type=int, default=7, help="统计最近 N 天（默认 7）")
     ap.add_argument("--today", action="store_true", help="只看今天")
     ap.add_argument("--sync", action="store_true", help="打印前先强制同步一次")
+    ap.add_argument("--update", action="store_true",
+                    help="拉取最新代码并重装（等同 bash update.sh）")
     a = ap.parse_args()
+    if a.update:
+        upd = HERE.parent / "update.sh"
+        if not upd.exists():
+            sys.exit(f"找不到 {upd}")
+        raise SystemExit(subprocess.run(["bash", str(upd)]).returncode)
     days = 1 if a.today else a.days
     maybe_sync(a.sync)
     if not DB.exists():

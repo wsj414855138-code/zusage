@@ -720,9 +720,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         .sorted { $0.tps > $1.tps }
 
         loadUnified(into: &s, weekAgo: weekAgo, dayAgo: dayAgo)
+        // 头部四格 = 全部 Agent 聚合（loadUnified 已把其他 Agent 的今日/7天量累加进 s.*）；
+        // ZCode 自己那一行仍用直读的独立数值，避免混入其他家的量
+        let zcTodayOut = s.todayOut
+        let zcWeekOut = s.weekOut
         let zcSpeedN = mN.values.reduce(0, +)
-        s.agents.insert(AgentRow(key: "zcode", todayOut: s.todayOut,
-                                 weekOut: s.weekOut, cost: 0,
+        s.agents.insert(AgentRow(key: "zcode", todayOut: zcTodayOut,
+                                 weekOut: zcWeekOut, cost: 0,
                                  tps: s.tps, speedN: zcSpeedN), at: 0)
         if !zcModelWeek.isEmpty {
             s.agentModels["zcode"] = zcModelWeek.keys.map { m -> ModelStat in
@@ -762,7 +766,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let startOfToday = Int64(Calendar.current.startOfDay(for: Date()).timeIntervalSince1970 * 1000)
 
         var stmt: OpaquePointer?
-        let sql = "SELECT agent, model, ts, output_tokens, cost_usd, gen_ms FROM requests WHERE ts >= ? AND agent != 'zcode'"
+        let sql = "SELECT agent, model, ts, output_tokens, cost_usd, gen_ms, input_tokens, cache_read_tokens FROM requests WHERE ts >= ? AND agent != 'zcode'"
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
             sqlite3_finalize(stmt)
             return
@@ -776,6 +780,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var mToday: [String: [String: Int64]] = [:]
         var aGen: [String: (out: Int64, sec: Double, n: Int)] = [:]
         var mGen: [String: [String: (out: Int64, sec: Double, n: Int)]] = [:]
+        // 其他 Agent 的今日/7天聚合（累加到 s.*，与 ZCode 直读值合并成头部四格）
+        var sumTodayIn: Int64 = 0, sumTodayCache: Int64 = 0
+        var sumTodayReq: Int = 0, sumTodayOut: Int64 = 0, sumWeekOut: Int64 = 0
         let df = DateFormatter()
         df.dateFormat = "MM-dd"
 
@@ -788,13 +795,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 ? 0.0 : sqlite3_column_double(stmt, 4)
             let gen = sqlite3_column_type(stmt, 5) == SQLITE_NULL
                 ? 0 : sqlite3_column_int64(stmt, 5)
+            let input = sqlite3_column_int64(stmt, 6)
+            let cache = sqlite3_column_int64(stmt, 7)
 
+            sumWeekOut += out
             var w = week[a] ?? (0, 0)
             w.out += out
             w.cost += cost
             week[a] = w
             let isToday = ts >= startOfToday
             if isToday {
+                sumTodayIn += input
+                sumTodayCache += cache
+                sumTodayReq += 1
+                sumTodayOut += out
                 today[a, default: 0] += out
             }
             let key = df.string(from: Date(timeIntervalSince1970: Double(ts) / 1000))
@@ -840,6 +854,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         s.agents.sort { $0.todayOut > $1.todayOut }
         s.daily = dayOut.keys.map { (day: $0, out: dayOut[$0] ?? 0) }.sorted { $0.day < $1.day }
+        // 头部四格合并：ZCode 直读值 + 其他 Agent 聚合值
+        s.todayIn += sumTodayIn
+        s.todayCache += sumTodayCache
+        s.todayReq += sumTodayReq
+        s.todayOut += sumTodayOut
+        s.weekOut += sumWeekOut
     }
 
     /// 面板展示内容的指纹：内容真的变了才重绘，避免每 5 秒重建整棵视图树造成闪烁。

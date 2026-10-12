@@ -59,6 +59,11 @@ bash install.sh
 
 装完菜单栏出现 ⚡ 图标，点击弹出面板；`zusage` 命令装在 `~/.local/bin/`（提示找不到命令就把它加进 PATH）。项目 clone 到哪个目录都行——安装脚本会把采集器部署成运行时副本，详见[常见问题](#常见问题)。
 
+- **更新**：本地安装不会静默自动跟 GitHub 同步。想更新时跑一次 `zusage --update`
+  （或 `bash update.sh`）：拉取最新代码 → 重新构建安装，10 秒完成。不做后台静默更新
+  是刻意的：项目在 `~/Desktop` 下时，launchd 定时更新会被 macOS TCC 拦截；把项目挪到
+  桌面之外后可以再加全自动更新。
+
 - 首次装登录项时 macOS 会弹一次「自动化」授权，允许则开机自启；拒绝也不影响使用。
 - 面板只显示**你本机实际在用的** Agent，没用过的不会出现空行；任何 Agent 或模型 7 天无请求会自动从面板消失。
 - 卸载：退出 App 后删 `~/Applications/ZUsage.app`、`~/Library/LaunchAgents/local.zusage.agentusage.plist`、`~/.zcode/cli/agent-usage/`，无其他残留。
@@ -142,7 +147,9 @@ def main():
 macOS TCC 保护 `~/Desktop`：launchd 拉起的进程读桌面下的脚本会报 `Operation not permitted`。所以 `install.sh` 把 `sync/sync.py` 复制成运行时副本 `~/.zcode/cli/agent-usage/sync.py`，launchd 与 App 都指向副本——**改完采集器源码必须重跑 `bash install.sh` 重新部署**。
 
 **面板数字是 0？**
-面板数据有「60 秒采集 + 5 秒刷新」两级延迟；刚装完或刚才能用的 Agent 需要等一轮同步。ZCode 的头条数字来自它的实时库，其余 Agent 走统一库。
+面板数据有「60 秒采集 + 5 秒刷新」两级延迟；刚装完或刚才能用的 Agent 需要等一轮同步。
+头部四格（今日输入 / cache 读 / 请求次数 / 今日输出）是**全部 Agent 的聚合值**——
+ZCode 部分实时直读、其余经 60 秒同步；头条的速度数字则是 ZCode 自己的。
 
 **某家的数字是配额还是 token？**
 `usage.db` 的 `unit` 列标明口径；当前四家均为 `token`。接入配额型数据源时用 `unit=quota`，UI 会标注。

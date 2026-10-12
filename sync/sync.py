@@ -57,8 +57,8 @@ CODEX_LOGIC_VERSION = 3
 # v1: session_usage 会话配额口径；v2: 改用 projects transcripts 逐请求口径（含 gen_ms），
 #     并在迁移时清空旧 quota 行
 WORKBUDDY_LOGIC_VERSION = 2
-# v1: kimi wire.jsonl 的 step.end 事件（真实流式时长）
-KIMI_LOGIC_VERSION = 1
+# v2: step.end 行不带 model，改为从同文件 usage.record/llm.request 行捎带模型名
+KIMI_LOGIC_VERSION = 2
 # v2: pi 增加逐请求耗时（gen_ms）
 PI_LOGIC_VERSION = 2
 
@@ -386,6 +386,7 @@ def sync_kimi(con):
     打断，不入库）。event.usage 口径：inputOther=不含缓存的输入、output=输出、
     inputCacheRead=缓存读；inputCacheCreation（新建缓存）在统一库无对应列，不入库。
     event.llmStreamDurationMs 是真实流式生成时长（毫秒），直接入库 gen_ms。
+    step.end 行不带 model，从最近一条 usage.record / llm.request 行捎带模型名。
     """
     if not KIMI_SESSIONS.exists():
         return
@@ -405,16 +406,23 @@ def sync_kimi(con):
             new_state[path_key] = sig
             continue
         recs = []
+        last_model = "?"   # step.end 行不带 model，从最近的 usage.record/llm.request 行捎带
         try:
             with open(f, encoding="utf-8", errors="ignore") as fh:
                 for ln, line in enumerate(fh, 1):
-                    if '"step.end"' not in line or '"usage"' not in line:
+                    if '"step.end"' not in line and '"model"' not in line:
                         continue
                     try:
                         j = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    if j.get("type") != "context.append_loop_event":
+                    t = j.get("type")
+                    if t == "usage.record" or t == "llm.request":
+                        m = j.get("model")
+                        if m:
+                            last_model = str(m)
+                        continue
+                    if t != "context.append_loop_event":
                         continue
                     ev = j.get("event") or {}
                     if ev.get("type") != "step.end":
@@ -427,7 +435,7 @@ def sync_kimi(con):
                     ts = j.get("time") or ev.get("time") or 0
                     if isinstance(ts, bool) or not isinstance(ts, (int, float)):
                         ts = 0
-                    model = str(j.get("model") or ev.get("model") or "?")
+                    model = str(ev.get("model") or j.get("model") or last_model)
                     if model.startswith("kimi-code/"):
                         model = model[len("kimi-code/"):]
                     gen = ev.get("llmStreamDurationMs")

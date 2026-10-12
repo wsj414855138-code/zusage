@@ -15,7 +15,7 @@ PLIST_LABEL="local.zusage.agentusage"
 PLIST_DST="$HOME/Library/LaunchAgents/$PLIST_LABEL.plist"
 
 echo "[0/6] 补执行位…"
-chmod +x "$ROOT/install.sh" "$ROOT/menubar/build.sh" "$ROOT/cli/zusage" "$ROOT/sync/sync.py" "$ROOT/tests/smoke_test.py" 2>/dev/null || true
+chmod +x "$ROOT/install.sh" "$ROOT/update.sh" "$ROOT/menubar/build.sh" "$ROOT/cli/zusage" "$ROOT/sync/sync.py" "$ROOT/tests/smoke_test.py" 2>/dev/null || true
 
 echo "[1/6] 构建菜单栏 App…"
 "$ROOT/menubar/build.sh"

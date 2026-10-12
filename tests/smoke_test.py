@@ -134,10 +134,10 @@ def build_fixtures(tmp):
     ki.mkdir(parents=True)
     kb = [
         {"type": "metadata"},
-        # 正常响应：真实时长 4.2s
+        # 正常响应：真实时长 4.2s（step.end 行不带 model，从 usage.record 捎带——真实数据如此）
         {"type": "usage.record", "time": T0, "model": "kimi-code/k3",
          "usage": {"inputOther": 100, "output": 9, "inputCacheRead": 0, "inputCacheCreation": 0}},
-        {"type": "context.append_loop_event", "time": T0 + 1, "model": "kimi-code/k3",
+        {"type": "context.append_loop_event", "time": T0 + 1,
          "event": {"type": "step.end", "turnId": "0", "usage": {"inputOther": 100, "output": 9,
                    "inputCacheRead": 200, "inputCacheCreation": 50},
                    "llmStreamDurationMs": 4200}},
@@ -147,7 +147,7 @@ def build_fixtures(tmp):
         # 时长缺失（中断）：入库存但无 gen
         {"type": "usage.record", "time": T0 + 3, "model": "kimi-code/kimi-for-coding",
          "usage": {"inputOther": 30, "output": 4, "inputCacheRead": 0, "inputCacheCreation": 0}},
-        {"type": "context.append_loop_event", "time": T0 + 4, "model": "kimi-code/kimi-for-coding",
+        {"type": "context.append_loop_event", "time": T0 + 4,
          "event": {"type": "step.end", "turnId": "2", "usage": {"inputOther": 30, "output": 4,
                    "inputCacheRead": 0, "inputCacheCreation": 0}}},
     ]
@@ -242,7 +242,7 @@ def main():
                    if "wire.jsonl:" in r[0]}
         check("kimi 逐请求行已入库（2 条，无 usage 的 step.end 不计）", len(ki_rows) == 2, ki_rows)
         r_k1 = ki_rows.get("3")
-        check("kimi 模型名去掉 kimi-code/ 前缀", r_k1 and r_k1[1] == "k3", r_k1)
+        check("kimi 模型名从 usage.record 捎带并去前缀", r_k1 and r_k1[1] == "k3", r_k1)
         check("kimi input=inputOther、cache 单独记录", r_k1 and r_k1[2] == 100 and r_k1[4] == 200, r_k1)
         check("kimi gen=真实流式时长 4200ms", r_k1 and r_k1[7] == 4200, r_k1)
         r_k2 = ki_rows.get("6")
