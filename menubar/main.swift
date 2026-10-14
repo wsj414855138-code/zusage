@@ -244,33 +244,35 @@ final class DayColumn: NSView {
 
 // MARK: - 面板
 
+/// 「还有 N 个模型」展开行：NSButton 没有 representedObject，用子类携带 agent key
+final class ExpandButton: NSButton {
+    var agentKey: String = ""
+}
+
 final class DashView: NSView {
     var onCycle: (() -> Void)?
     var onRefresh: (() -> Void)?
-    var onViewToggle: (() -> Void)?
-    private(set) var speedView = false
+    var onResize: (() -> Void)?              // 展开模型行后高度变化，需重算 popover 尺寸
+    private var expanded: Set<String> = []   // 点击展开全部模型行的 Agent
+    private var lastSnap: Snapshot?
 
     private let main = NSStackView()
     private let speedBig = label("–", 21, .bold, .labelColor, mono: true)
     private let outBig = label("–", 21, .bold, .labelColor, mono: true)
     private var kv: [String: NSTextField] = [:]
-    private let agentHeader = label("Agent · 今日 / 近 7 天", 11, .bold, .secondaryLabelColor)
+    private let agentHeader = label("Agent · 速度 · 今日 / 近 7 天", 11, .bold, .secondaryLabelColor)
     private let agentStack = vstack([], spacing: 7)
-    private let speedStack = vstack([], spacing: 7)
-    private let speedGroup = NSStackView()
     private var dayCols: [DayColumn] = []
     private let cycleBtn: NSButton
-    private let viewBtn: NSButton
 
     override init(frame frameRect: NSRect) {
         cycleBtn = NSButton(title: "标题：速度+输出", target: nil, action: nil)
-        viewBtn = NSButton(title: "视图：用量", target: nil, action: nil)
         super.init(frame: NSRect(x: 0, y: 0, width: PANEL_W, height: 380))
         wantsLayer = true
 
         let refreshBtn = NSButton(title: "刷新", target: nil, action: nil)
         let quitBtn = NSButton(title: "退出", target: nil, action: nil)
-        for b in [cycleBtn, viewBtn, refreshBtn, quitBtn] {
+        for b in [cycleBtn, refreshBtn, quitBtn] {
             b.isBordered = false
             b.font = NSFont.systemFont(ofSize: 11)
             b.contentTintColor = .secondaryLabelColor
@@ -282,8 +284,8 @@ final class DashView: NSView {
             kv[cap] = v
             return vstack([v, label(cap, 10, .regular, .secondaryLabelColor)], spacing: 1)
         }
-        let gridRow1 = hstack([kvBlock("7天输出"), kvBlock("今日输入"),
-                               kvBlock("cache 读"), kvBlock("请求次数")], spacing: 6)
+        // 今日两格：请求次数 + 7天输出（今日输入 / cache 读收进悬停提示，降低密度）
+        let gridRow1 = hstack([kvBlock("请求次数"), kvBlock("7天输出")], spacing: 6)
         gridRow1.distribution = .fillEqually
 
         // 每日柱状图
@@ -297,14 +299,12 @@ final class DashView: NSView {
 
         cycleBtn.target = self
         cycleBtn.action = #selector(cycleTapped)
-        viewBtn.target = self
-        viewBtn.action = #selector(viewTapped)
         refreshBtn.target = self
         refreshBtn.action = #selector(refreshTapped)
         quitBtn.target = NSApp
         quitBtn.action = #selector(NSApplication.terminate(_:))
 
-        let footer = hstack([cycleBtn, spacer(), viewBtn, refreshBtn, quitBtn], spacing: 8)
+        let footer = hstack([cycleBtn, spacer(), refreshBtn, quitBtn], spacing: 8)
 
         main.orientation = .vertical
         main.alignment = .leading
@@ -325,17 +325,8 @@ final class DashView: NSView {
                             align: .centerY)
         speedBig.setContentHuggingPriority(.init(260), for: .horizontal)
 
-        // 「模型速度」整块（含上方的分隔线）打包成一个组，便于在速度视图下整体折叠
-        speedGroup.orientation = .vertical
-        speedGroup.alignment = .leading
-        speedGroup.spacing = 8
-        speedGroup.addArrangedSubview(divider())
-        speedGroup.addArrangedSubview(label("模型速度 · 近 24 小时", 11, .bold, .secondaryLabelColor))
-        speedGroup.addArrangedSubview(speedStack)
-
         for v in [header, divider(), label("今日", 11, .bold, .secondaryLabelColor), gridRow1,
                   divider(), agentHeader, agentStack,
-                  speedGroup,
                   divider(), label("每日输出 · 近 7 天", 11, .bold, .secondaryLabelColor), chartRow,
                   divider(), footer] {
             main.addArrangedSubview(v)
@@ -347,96 +338,78 @@ final class DashView: NSView {
     @objc private func cycleTapped() { onCycle?() }
     @objc private func refreshTapped() { onRefresh?() }
 
-    @objc private func viewTapped() {
-        speedView.toggle()
-        updateViewButton()
-        onViewToggle?()
-    }
-
-    func setSpeedView(_ on: Bool) {
-        speedView = on
-        updateViewButton()
-    }
-
-    private func updateViewButton() {
-        viewBtn.title = speedView ? "视图：速度" : "视图：用量"
+    /// 点击「还有 N 个模型」行：展开/收起该 Agent 的全部模型行
+    @objc private func expandTapped(_ sender: NSButton) {
+        guard let b = sender as? ExpandButton else { return }
+        let key = b.agentKey
+        if expanded.contains(key) { expanded.remove(key) } else { expanded.insert(key) }
+        if let s = lastSnap { update(s) }
+        onResize?()
     }
 
     func update(_ s: Snapshot) {
+        lastSnap = s
         speedBig.stringValue = s.tps > 0 ? String(format: "%.1f", s.tps) : "–"
         outBig.stringValue = fmtCompact(s.todayOut)
-        kv["7天输出"]?.stringValue = fmtCompact(s.weekOut)
-        kv["今日输入"]?.stringValue = fmtCompact(s.todayIn)
-        kv["cache 读"]?.stringValue = fmtCompact(s.todayCache)
         kv["请求次数"]?.stringValue = String(s.todayReq)
+        kv["7天输出"]?.stringValue = fmtCompact(s.weekOut)
+        kv["请求次数"]?.toolTip = "今日 \(s.todayReq) 次请求\n今日输入 \(fmtSep(s.todayIn)) tok · cache 读 \(fmtSep(s.todayCache)) tok"
         kv["7天输出"]?.toolTip = "\(fmtSep(s.weekOut)) tok"
-        kv["今日输入"]?.toolTip = "\(fmtSep(s.todayIn)) tok"
-        kv["cache 读"]?.toolTip = "\(fmtSep(s.todayCache)) tok"
-        kv["请求次数"]?.toolTip = "今日 \(s.todayReq) 次模型请求"
 
-        agentHeader.stringValue = speedView ? "Agent · 生成速度 24h" : "Agent · 今日 / 近 7 天"
-        speedGroup.isHidden = speedView   // 速度视图下 Agent 区已含各模型速度，这块是重复的
+        agentHeader.stringValue = "Agent · 速度 · 今日 / 近 7 天"
         clearStack(agentStack)
-        if speedView {
-            // ZCode 固定在首位（头条数字就是它的），其余按速度排
-            let rest = s.agents.filter { $0.key != "zcode" }.sorted { $0.tps > $1.tps }
-            let ranked = s.agents.filter { $0.key == "zcode" } + rest
-            let maxTps = ranked.first?.tps ?? 0
-            for a in ranked where a.tps > 0 {
-                let nm = dispName(a.key)
-                let right = String(format: "%.1f t/s · %d 次", a.tps, a.speedN)
-                agentStack.addArrangedSubview(vstack([
-                    hstack([label(nm, 12, .medium), spacer(),
-                            label(right, 11, .regular, .secondaryLabelColor, mono: true)]),
-                    { let b = BarView(trackWidth: CONTENT_W); b.set(maxTps > 0 ? CGFloat(a.tps / maxTps) : 0); return b }(),
-                ], spacing: 3))
-                for m in (s.agentModels[a.key] ?? []).filter({ $0.tps > 0 }).prefix(3) {
-                    agentStack.addArrangedSubview(hstack([
-                        label("↳ \(m.model)", 10, .regular, .secondaryLabelColor), spacer(),
-                        label(String(format: "%.1f t/s · %d次", m.tps, m.n), 10, .regular, .tertiaryLabelColor, mono: true)]))
-                }
+        // ZCode 固定在首位（头条速度是它的），其余按今日用量、再按 7 天用量排
+        let rest = s.agents.filter { $0.key != "zcode" }
+            .sorted { ($0.todayOut, $0.weekOut) > ($1.todayOut, $1.weekOut) }
+        let ranked = s.agents.filter { $0.key == "zcode" } + rest
+        let maxTps = ranked.map { $0.tps }.max() ?? 0
+        let maxWeek = ranked.map { $0.weekOut }.max() ?? 0
+        for a in ranked {
+            let nm = dispName(a.key)
+            let right: String
+            if a.tps > 0 {
+                right = String(format: "%.0f t/s · 今日 %@", a.tps, fmtCompact(a.todayOut))
+            } else if a.todayOut > 0 {
+                right = "今日 \(fmtCompact(a.todayOut)) · 7天 \(fmtCompact(a.weekOut))"
+            } else {
+                right = "7天 \(fmtCompact(a.weekOut))"
             }
-            let noSpeed = ranked.filter { $0.tps <= 0 }
-            if !noSpeed.isEmpty {
-                let names = noSpeed.map { dispName($0.key) }.joined(separator: "、")
-                agentStack.addArrangedSubview(label("24h 内无生成样本：\(names)", 11, .regular, .tertiaryLabelColor))
-            }
-        } else {
-            let maxWeek = s.agents.map { $0.weekOut }.max() ?? 0
-            // ZCode 固定在首位，其余按今日用量、再按 7 天用量排（避免并列时顺序随机）
-            let rest = s.agents.filter { $0.key != "zcode" }
-                .sorted { ($0.todayOut, $0.weekOut) > ($1.todayOut, $1.weekOut) }
-            for a in s.agents.filter({ $0.key == "zcode" }) + rest {
-                let nm = dispName(a.key)
-                let right = a.todayOut > 0
-                    ? "今日 \(fmtCompact(a.todayOut)) · 7天 \(fmtCompact(a.weekOut))"
-                    : "7天 \(fmtCompact(a.weekOut))"
-                agentStack.addArrangedSubview(vstack([
-                    hstack([label(nm, 12, .medium), spacer(), label(right, 11, .regular, .secondaryLabelColor, mono: true)]),
-                    { let b = BarView(trackWidth: CONTENT_W); b.set(maxWeek > 0 ? CGFloat(a.weekOut) / CGFloat(maxWeek) : 0); return b }(),
-                ], spacing: 3))
-                if let models = s.agentModels[a.key] {
-                    for m in models.prefix(3) {
-                        let t = m.today > 0 ? "今日 \(fmtCompact(m.today))" : "7天 \(fmtCompact(m.week))"
-                        agentStack.addArrangedSubview(hstack([
-                            label("↳ \(m.model)", 10, .regular, .secondaryLabelColor), spacer(),
-                            label(t, 10, .regular, .tertiaryLabelColor, mono: true)]))
-                    }
-                }
-            }
-        }
-
-        clearStack(speedStack)
-        let maxTps = s.speeds.first?.tps ?? 0
-        for m in s.speeds.prefix(5) {
-            speedStack.addArrangedSubview(vstack([
-                hstack([label(m.name, 12), spacer(),
-                        label(String(format: "%.1f t/s · %d次", m.tps, m.n), 11, .regular, .secondaryLabelColor, mono: true)]),
-                { let b = BarView(trackWidth: CONTENT_W); b.set(maxTps > 0 ? CGFloat(m.tps / maxTps) : 0); return b }(),
+            agentStack.addArrangedSubview(vstack([
+                hstack([label(nm, 12, .medium), spacer(),
+                        label(right, 11, .regular, .secondaryLabelColor, mono: true)]),
+                { let b = BarView(trackWidth: CONTENT_W)
+                  if a.tps > 0 { b.set(maxTps > 0 ? CGFloat(a.tps / maxTps) : 0) }
+                  else { b.set(maxWeek > 0 ? CGFloat(a.weekOut) / CGFloat(maxWeek) : 0) }
+                  return b }(),
             ], spacing: 3))
-        }
-        if s.speeds.isEmpty {
-            speedStack.addArrangedSubview(label("暂无数据", 11, .regular, .tertiaryLabelColor))
+            // 模型子行：默认只显示主力模型 1 行，其余折叠进「还有 N 个模型」（点击展开）
+            let models = (s.agentModels[a.key] ?? [])
+                .sorted { ($0.today, $0.week) > ($1.today, $1.week) }
+            guard !models.isEmpty else { continue }
+            let showAll = expanded.contains(a.key)
+            for m in (showAll ? models : Array(models.prefix(1))) {
+                let detail: String
+                if m.tps > 0 {
+                    detail = String(format: "%.1f t/s · 今日 %@", m.tps, fmtCompact(m.today))
+                } else if m.today > 0 {
+                    detail = "今日 \(fmtCompact(m.today))"
+                } else {
+                    detail = "7天 \(fmtCompact(m.week))"
+                }
+                agentStack.addArrangedSubview(hstack([
+                    label("↳ \(m.model)", 10, .regular, .secondaryLabelColor), spacer(),
+                    label(detail, 10, .regular, .tertiaryLabelColor, mono: true)]))
+            }
+            if models.count > 1 {
+                let hidden = showAll ? 0 : models.count - 1
+                let more = ExpandButton(title: showAll ? "↳ 收起 ▴" : "↳ 还有 \(hidden) 个模型 ▾",
+                                        target: self, action: #selector(expandTapped(_:)))
+                more.isBordered = false
+                more.font = NSFont.systemFont(ofSize: 10)
+                more.contentTintColor = .tertiaryLabelColor
+                more.agentKey = a.key
+                agentStack.addArrangedSubview(more)
+            }
         }
 
         let maxDay = s.daily.map { $0.out }.max() ?? 0
@@ -503,13 +476,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         dash.onCycle = { [weak self] in self?.cycleTitle() }
         dash.onRefresh = { [weak self] in self?.refreshNow() }
-        dash.onViewToggle = { [weak self] in
-            guard let self else { return }
-            UserDefaults.standard.set(self.dash.speedView, forKey: "speedView")
-            self.dash.update(self.snap)
-            self.sizePopover()
-        }
-        dash.setSpeedView(UserDefaults.standard.bool(forKey: "speedView"))
+        dash.onResize = { [weak self] in self?.sizePopover() }
         dash.update(snap)
         dash.setCycleTitle(titleMode.label)
 
@@ -864,8 +831,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// 面板展示内容的指纹：内容真的变了才重绘，避免每 5 秒重建整棵视图树造成闪烁。
     private func renderKey(_ s: Snapshot) -> String {
-        var parts = [dash.speedView ? "S" : "U",
-                     String(format: "%.0f", s.tps),
+        var parts = [String(format: "%.0f", s.tps),
                      "\(s.todayOut)", "\(s.todayIn)", "\(s.todayCache)", "\(s.todayReq)",
                      "\(s.weekOut)"]
         for a in s.agents { parts.append("\(a.key):\(a.todayOut):\(a.weekOut):\(a.speedN)") }
