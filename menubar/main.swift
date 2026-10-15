@@ -123,6 +123,7 @@ struct AgentRow {
     let cost: Double
     let tps: Double        // 24h 汇总生成速度，0 = 无速度数据
     let speedN: Int
+    let cacheRate: Double? // 今日 cache 命中率 = cache读/(输入+cache读)，nil = 无数据
 }
 
 enum TitleMode: Int {
@@ -353,7 +354,12 @@ final class DashView: NSView {
         outBig.stringValue = fmtCompact(s.todayOut)
         kv["请求次数"]?.stringValue = String(s.todayReq)
         kv["7天输出"]?.stringValue = fmtCompact(s.weekOut)
-        kv["请求次数"]?.toolTip = "今日 \(s.todayReq) 次请求\n今日输入 \(fmtSep(s.todayIn)) tok · cache 读 \(fmtSep(s.todayCache)) tok"
+        kv["请求次数"]?.toolTip = {
+            var t = "今日 \(s.todayReq) 次请求\n今日输入 \(fmtSep(s.todayIn)) tok · cache 读 \(fmtSep(s.todayCache)) tok"
+            let denom = s.todayIn + s.todayCache
+            if denom > 0 { t += String(format: "\ncache 命中率 %.0f%%", Double(s.todayCache) / Double(denom) * 100) }
+            return t
+        }()
         kv["7天输出"]?.toolTip = "\(fmtSep(s.weekOut)) tok"
 
         agentHeader.stringValue = "Agent · 速度 · 今日 / 近 7 天"
@@ -374,20 +380,28 @@ final class DashView: NSView {
             } else {
                 right = "7天 \(fmtCompact(a.weekOut))"
             }
+            let nameLabel = label(nm, 12, .medium)
+            if let r = a.cacheRate {
+                nameLabel.toolTip = String(format: "cache 命中率 %.0f%%（今日 = cache 读 ÷ (输入 + cache 读)）", r * 100)
+            }
             agentStack.addArrangedSubview(vstack([
-                hstack([label(nm, 12, .medium), spacer(),
+                hstack([nameLabel, spacer(),
                         label(right, 11, .regular, .secondaryLabelColor, mono: true)]),
                 { let b = BarView(trackWidth: CONTENT_W)
                   if a.tps > 0 { b.set(maxTps > 0 ? CGFloat(a.tps / maxTps) : 0) }
                   else { b.set(maxWeek > 0 ? CGFloat(a.weekOut) / CGFloat(maxWeek) : 0) }
                   return b }(),
             ], spacing: 3))
-            // 模型子行：默认只显示主力模型 1 行，其余折叠进「还有 N 个模型」（点击展开）
+            // 模型子行（对齐 ccusage 的窗口过滤惯例）：只有「今日有量或 24h 有速度样本」的
+            // 模型才单独成行；仅存在于 7 天窗口的旧模型折叠成一行汇总，展开才显示明细
             let models = (s.agentModels[a.key] ?? [])
                 .sorted { ($0.today, $0.week) > ($1.today, $1.week) }
             guard !models.isEmpty else { continue }
+            let active = models.filter { $0.today > 0 || $0.tps > 0 }
+            let stale = models.filter { $0.today <= 0 && $0.tps <= 0 }
             let showAll = expanded.contains(a.key)
-            for m in (showAll ? models : Array(models.prefix(1))) {
+
+            func modelRow(_ m: ModelStat) {
                 let detail: String
                 if m.tps > 0 {
                     detail = String(format: "%.1f t/s · 今日 %@", m.tps, fmtCompact(m.today))
@@ -400,8 +414,24 @@ final class DashView: NSView {
                     label("↳ \(m.model)", 10, .regular, .secondaryLabelColor), spacer(),
                     label(detail, 10, .regular, .tertiaryLabelColor, mono: true)]))
             }
-            if models.count > 1 {
-                let hidden = showAll ? 0 : models.count - 1
+
+            // 默认只显示主力 1 行（优先活跃模型）
+            if let first = active.first ?? stale.first {
+                modelRow(first)
+            }
+            if showAll {
+                for m in active.dropFirst(active.isEmpty ? 0 : 1) { modelRow(m) }
+                if !stale.isEmpty {
+                    let sum = stale.reduce(Int64(0)) { $0 + $1.week }
+                    agentStack.addArrangedSubview(label(
+                        "↳ 近 7 天未活跃 · \(stale.count) 个模型 · 共 \(fmtCompact(sum)) tok",
+                        10, .regular, .tertiaryLabelColor))
+                    for m in stale { modelRow(m) }
+                }
+            }
+            let shown = (active.first ?? stale.first) != nil ? 1 : 0
+            if models.count > shown {
+                let hidden = models.count - shown
                 let more = ExpandButton(title: showAll ? "↳ 收起 ▴" : "↳ 还有 \(hidden) 个模型 ▾",
                                         target: self, action: #selector(expandTapped(_:)))
                 more.isBordered = false
@@ -691,10 +721,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // ZCode 自己那一行仍用直读的独立数值，避免混入其他家的量
         let zcTodayOut = s.todayOut
         let zcWeekOut = s.weekOut
+        let zcTodayIn = s.todayIn
+        let zcTodayCache = s.todayCache
         let zcSpeedN = mN.values.reduce(0, +)
+        let zcDenom = zcTodayIn + zcTodayCache
+        let zcRate: Double? = zcDenom > 0 ? Double(zcTodayCache) / Double(zcDenom) : nil
         s.agents.insert(AgentRow(key: "zcode", todayOut: zcTodayOut,
                                  weekOut: zcWeekOut, cost: 0,
-                                 tps: s.tps, speedN: zcSpeedN), at: 0)
+                                 tps: s.tps, speedN: zcSpeedN, cacheRate: zcRate), at: 0)
         if !zcModelWeek.isEmpty {
             s.agentModels["zcode"] = zcModelWeek.keys.map { m -> ModelStat in
                 let sec = mSec[m] ?? 0
@@ -750,6 +784,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 其他 Agent 的今日/7天聚合（累加到 s.*，与 ZCode 直读值合并成头部四格）
         var sumTodayIn: Int64 = 0, sumTodayCache: Int64 = 0
         var sumTodayReq: Int = 0, sumTodayOut: Int64 = 0, sumWeekOut: Int64 = 0
+        var tIn: [String: Int64] = [:], tCr: [String: Int64] = [:]   // 各 Agent 今日输入/cache 读
         let df = DateFormatter()
         df.dateFormat = "MM-dd"
 
@@ -777,6 +812,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 sumTodayReq += 1
                 sumTodayOut += out
                 today[a, default: 0] += out
+                tIn[a, default: 0] += input
+                tCr[a, default: 0] += cache
             }
             let key = df.string(from: Date(timeIntervalSince1970: Double(ts) / 1000))
             dayOut[key, default: 0] += out
@@ -815,8 +852,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         for (a, w) in week {
             let t = tpsOf(aGen[a])
+            let denom = (tIn[a] ?? 0) + (tCr[a] ?? 0)
+            let rate: Double? = denom > 0
+                ? Double(tCr[a] ?? 0) / Double(denom) : nil
             s.agents.append(AgentRow(key: a, todayOut: today[a] ?? 0,
-                                     weekOut: w.out, cost: w.cost, tps: t.0, speedN: t.1))
+                                     weekOut: w.out, cost: w.cost, tps: t.0, speedN: t.1,
+                                     cacheRate: rate))
             s.weekCost += w.cost
         }
         s.agents.sort { $0.todayOut > $1.todayOut }
