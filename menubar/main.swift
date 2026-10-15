@@ -285,8 +285,9 @@ final class DashView: NSView {
             kv[cap] = v
             return vstack([v, label(cap, 10, .regular, .secondaryLabelColor)], spacing: 1)
         }
-        // 今日两格：请求次数 + 7天输出（今日输入 / cache 读收进悬停提示，降低密度）
-        let gridRow1 = hstack([kvBlock("请求次数"), kvBlock("7天输出")], spacing: 6)
+        // 今日三格：请求次数 + cache 命中率 + 7天输出（今日输入 / cache 读的绝对值收进悬停提示）
+        let gridRow1 = hstack([kvBlock("请求次数"), kvBlock("cache 命中率"),
+                               kvBlock("7天输出")], spacing: 6)
         gridRow1.distribution = .fillEqually
 
         // 每日柱状图
@@ -354,43 +355,54 @@ final class DashView: NSView {
         outBig.stringValue = fmtCompact(s.todayOut)
         kv["请求次数"]?.stringValue = String(s.todayReq)
         kv["7天输出"]?.stringValue = fmtCompact(s.weekOut)
-        kv["请求次数"]?.toolTip = {
-            var t = "今日 \(s.todayReq) 次请求\n今日输入 \(fmtSep(s.todayIn)) tok · cache 读 \(fmtSep(s.todayCache)) tok"
-            let denom = s.todayIn + s.todayCache
-            if denom > 0 { t += String(format: "\ncache 命中率 %.0f%%", Double(s.todayCache) / Double(denom) * 100) }
-            return t
-        }()
-        kv["7天输出"]?.toolTip = "\(fmtSep(s.weekOut)) tok"
+        let denom = s.todayIn + s.todayCache
+        kv["cache 命中率"]?.stringValue = denom > 0
+            ? String(format: "%.0f%%", Double(s.todayCache) / Double(denom) * 100) : "–"
+        kv["请求次数"]?.toolTip = "今日输入 \(fmtSep(s.todayIn)) tok · cache 读 \(fmtSep(s.todayCache)) tok"
+        kv["cache 命中率"]?.toolTip = "cache 读 ÷ (输入 + cache 读)\n今日输入 \(fmtSep(s.todayIn)) tok · cache 读 \(fmtSep(s.todayCache)) tok"
+        kv["7天输出"]?.toolTip = "近 7 天共 \(fmtSep(s.weekOut)) tok"
 
         agentHeader.stringValue = "Agent · 速度 · 今日 / 近 7 天"
         clearStack(agentStack)
-        // ZCode 固定在首位（头条速度是它的），其余按今日用量、再按 7 天用量排
-        let rest = s.agents.filter { $0.key != "zcode" }
+        // 只显示「今日有量或 24h 有速度样本」的 Agent（与模型行的窗口过滤规则一致）；
+        // 只剩更早用量的 Agent 整行隐藏，总量仍计入头部 7 天聚合与每日柱状图
+        let shown = s.agents.filter { $0.todayOut > 0 || $0.tps > 0 }
+        let rest = shown.filter { $0.key != "zcode" }
             .sorted { ($0.todayOut, $0.weekOut) > ($1.todayOut, $1.weekOut) }
-        let ranked = s.agents.filter { $0.key == "zcode" } + rest
+        let ranked = shown.filter { $0.key == "zcode" } + rest
+        if ranked.isEmpty {
+            agentStack.addArrangedSubview(label("今日暂无用量", 11, .regular, .tertiaryLabelColor))
+        }
         let maxTps = ranked.map { $0.tps }.max() ?? 0
         let maxWeek = ranked.map { $0.weekOut }.max() ?? 0
         for a in ranked {
             let nm = dispName(a.key)
+            // 行尾三段式：速度 · 今日用量 · 缓存命中率（可见，不依赖悬停）
             let right: String
-            if a.tps > 0 {
-                right = String(format: "%.0f t/s · 今日 %@", a.tps, fmtCompact(a.todayOut))
-            } else if a.todayOut > 0 {
-                right = "今日 \(fmtCompact(a.todayOut)) · 7天 \(fmtCompact(a.weekOut))"
-            } else {
+            switch (a.tps > 0, a.todayOut > 0) {
+            case (true, _):
+                right = a.cacheRate.map {
+                    String(format: "%.0f t/s · 今日 %@ · 缓存 %.0f%%", a.tps, fmtCompact(a.todayOut), $0 * 100)
+                } ?? String(format: "%.0f t/s · 今日 %@", a.tps, fmtCompact(a.todayOut))
+            case (false, true):
+                right = a.cacheRate.map {
+                    String(format: "今日 %@ · 缓存 %.0f%%", fmtCompact(a.todayOut), $0 * 100)
+                } ?? "今日 \(fmtCompact(a.todayOut))"
+            default:
                 right = "7天 \(fmtCompact(a.weekOut))"
             }
             let nameLabel = label(nm, 12, .medium)
-            if let r = a.cacheRate {
-                nameLabel.toolTip = String(format: "cache 命中率 %.0f%%（今日 = cache 读 ÷ (输入 + cache 读)）", r * 100)
+            let rightLabel = label(right, 11, .regular, .secondaryLabelColor, mono: true)
+            let bar = { let b = BarView(trackWidth: CONTENT_W)
+                if a.tps > 0 { b.set(maxTps > 0 ? CGFloat(a.tps / maxTps) : 0) }
+                else { b.set(maxWeek > 0 ? CGFloat(a.weekOut) / CGFloat(maxWeek) : 0) }
+                return b }()
+            let rowTip: String? = a.cacheRate.map {
+                String(format: "cache 命中率 %.0f%%（今日 = cache 读 ÷ (输入 + cache 读)）", $0 * 100)
             }
+            for v in [nameLabel, rightLabel, bar] { v.toolTip = rowTip }   // 悬停看口径说明
             agentStack.addArrangedSubview(vstack([
-                hstack([nameLabel, spacer(),
-                        label(right, 11, .regular, .secondaryLabelColor, mono: true)]),
-                { let b = BarView(trackWidth: CONTENT_W)
-                  if a.tps > 0 { b.set(maxTps > 0 ? CGFloat(a.tps / maxTps) : 0) }
-                  else { b.set(maxWeek > 0 ? CGFloat(a.weekOut) / CGFloat(maxWeek) : 0) }
-                  return b }(),
+                hstack([nameLabel, spacer(), rightLabel]), bar,
             ], spacing: 3))
             // 模型子行（对齐 ccusage 的窗口过滤惯例）：只有「今日有量或 24h 有速度样本」的
             // 模型才单独成行；仅存在于 7 天窗口的旧模型折叠成一行汇总，展开才显示明细
