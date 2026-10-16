@@ -33,18 +33,19 @@ $ zusage
 多 Agent 用量 · 近 7 天
 
 Agent          今日记录       今日输出      累计记录        累计输出      累计费用
-ZCode            54        34k        64         34k         —
-Codex            45        20k      1579        1.2M         —
-WorkBuddy        25        57k       471        285k         —
-Pi                0          0       119        138k     $4.10
+ZCode            12         2k       775        681k         —
+Codex           201        96k      2307        1.2M         —
+WorkBuddy       307       543k      2329        3.1M         —
+Pi                0          0       132        125k     $2.36
+Kimi Code         0          0         2         230         —
 
 生成速度（近 24h · 有逐请求耗时的来源）
 Agent · 模型                                     tok/s     请求
-WorkBuddy · kimi-k3-1                          176.7     17
-ZCode · GLM-5.3-Flashx                         131.6     36
-WorkBuddy · deepseek-v4.1-flash                 94.9      5
-Codex · gpt-6.1-sol                             18.1   1530
-Pi · k3                                         23.7     99
+WorkBuddy · deepseek-v4.1-flash                 83.1   1956
+ZCode · GLM-5.3-Flashx                         139.5    506
+Codex · gpt-6.1-sol                             14.9   2016
+WorkBuddy · step-5-preview                      36.8    265
+Codex · gpt-6-astra                             17.6    144
 ```
 
 ## 快速开始
