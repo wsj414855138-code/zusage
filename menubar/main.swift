@@ -147,7 +147,9 @@ struct Snapshot {
     var todayIn: Int64 = 0
     var todayCache: Int64 = 0
     var todayReq = 0
+    var todayTotal: Int64 = 0   // 全量口径：输入+输出+cache 读（与官网用量页同结构，可对账）
     var weekOut: Int64 = 0
+    var weekTotal: Int64 = 0
     var tps: Double = 0
     var speeds: [ModelSpeed] = []
     var agents: [AgentRow] = []
@@ -285,9 +287,9 @@ final class DashView: NSView {
             kv[cap] = v
             return vstack([v, label(cap, 10, .regular, .secondaryLabelColor)], spacing: 1)
         }
-        // 今日三格：请求次数 + cache 命中率 + 7天输出（今日输入 / cache 读的绝对值收进悬停提示）
-        let gridRow1 = hstack([kvBlock("请求次数"), kvBlock("cache 命中率"),
-                               kvBlock("7天输出")], spacing: 6)
+        // 今日四格：请求次数 + 全量口径三件套（今日总 / cache 命中率 / 7天总），可与官网对账
+        let gridRow1 = hstack([kvBlock("请求次数"), kvBlock("今日总"),
+                               kvBlock("cache 命中率"), kvBlock("7天总")], spacing: 6)
         gridRow1.distribution = .fillEqually
 
         // 每日柱状图
@@ -354,12 +356,16 @@ final class DashView: NSView {
         speedBig.stringValue = s.tps > 0 ? String(format: "%.1f", s.tps) : "–"
         outBig.stringValue = fmtCompact(s.todayOut)
         kv["请求次数"]?.stringValue = String(s.todayReq)
+        kv["今日总"]?.stringValue = fmtCompact(s.todayTotal)
+        kv["7天总"]?.stringValue = fmtCompact(s.weekTotal)
         kv["7天输出"]?.stringValue = fmtCompact(s.weekOut)
         let denom = s.todayIn + s.todayCache
         kv["cache 命中率"]?.stringValue = denom > 0
             ? String(format: "%.0f%%", Double(s.todayCache) / Double(denom) * 100) : "–"
         kv["请求次数"]?.toolTip = "今日输入 \(fmtSep(s.todayIn)) tok · cache 读 \(fmtSep(s.todayCache)) tok"
+        kv["今日总"]?.toolTip = "全量口径：输入 \(fmtSep(s.todayIn)) + 输出 \(fmtSep(s.todayOut)) + cache 读 \(fmtSep(s.todayCache))\n与官网用量页同结构，可对账（官方计量规则以其为准）"
         kv["cache 命中率"]?.toolTip = "cache 读 ÷ (输入 + cache 读)\n今日输入 \(fmtSep(s.todayIn)) tok · cache 读 \(fmtSep(s.todayCache)) tok"
+        kv["7天总"]?.toolTip = "近 7 天全量口径（输入+输出+cache 读）"
         kv["7天输出"]?.toolTip = "近 7 天共 \(fmtSep(s.weekOut)) tok"
 
         agentHeader.stringValue = "Agent · 速度 · 今日 / 近 7 天"
@@ -680,6 +686,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var totalGenSec = 0.0
         var zcDaily: [String: Int64] = [:]
         var zcModelWeek: [String: Int64] = [:]
+        var zcWeekIn: Int64 = 0, zcWeekCache: Int64 = 0   // ZCode 7 天全量口径（输入/cache）
         var zcModelToday: [String: Int64] = [:]
         let df = DateFormatter()
         df.dateFormat = "MM-dd"
@@ -698,6 +705,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let dayKey = df.string(from: Date(timeIntervalSince1970: Double(started) / 1000))
             zcDaily[dayKey, default: 0] += out
             zcModelWeek[model, default: 0] += out
+            zcWeekIn += input
+            zcWeekCache += cache
             if started >= startOfToday {
                 s.todayReq += 1
                 s.todayOut += out
@@ -738,6 +747,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let zcSpeedN = mN.values.reduce(0, +)
         let zcDenom = zcTodayIn + zcTodayCache
         let zcRate: Double? = zcDenom > 0 ? Double(zcTodayCache) / Double(zcDenom) : nil
+        // 全量口径（输入+输出+cache）：ZCode 直读部分先行计入，loadUnified 再累加其他 Agent
+        s.todayTotal = zcTodayIn + zcTodayCache + zcTodayOut
+        s.weekTotal = zcWeekIn + zcWeekCache + zcWeekOut
         s.agents.insert(AgentRow(key: "zcode", todayOut: zcTodayOut,
                                  weekOut: zcWeekOut, cost: 0,
                                  tps: s.tps, speedN: zcSpeedN, cacheRate: zcRate), at: 0)
@@ -796,6 +808,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 其他 Agent 的今日/7天聚合（累加到 s.*，与 ZCode 直读值合并成头部四格）
         var sumTodayIn: Int64 = 0, sumTodayCache: Int64 = 0
         var sumTodayReq: Int = 0, sumTodayOut: Int64 = 0, sumWeekOut: Int64 = 0
+        var sumWeekIn: Int64 = 0, sumWeekCache: Int64 = 0
         var tIn: [String: Int64] = [:], tCr: [String: Int64] = [:]   // 各 Agent 今日输入/cache 读
         let df = DateFormatter()
         df.dateFormat = "MM-dd"
@@ -813,6 +826,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let cache = sqlite3_column_int64(stmt, 7)
 
             sumWeekOut += out
+            sumWeekIn += input
+            sumWeekCache += cache
             var w = week[a] ?? (0, 0)
             w.out += out
             w.cost += cost
@@ -880,6 +895,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         s.todayReq += sumTodayReq
         s.todayOut += sumTodayOut
         s.weekOut += sumWeekOut
+        // 全量口径（输入+输出+cache 读），与官网用量页同结构可对账
+        s.todayTotal += sumTodayIn + sumTodayCache + sumTodayOut
+        s.weekTotal += sumWeekIn + sumWeekCache + sumWeekOut
     }
 
     /// 面板展示内容的指纹：内容真的变了才重绘，避免每 5 秒重建整棵视图树造成闪烁。
